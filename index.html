@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Wochenplaner">
-<link rel="apple-touch-icon" href="icon.svg">
-<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" type="image/png" href="icon.png">
 <title>Wochenplaner 🍽️</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -237,6 +237,8 @@
   .week-empty { color: var(--ink3); font-style: italic; }
 
   /* Responsive */
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
   @media (max-width: 400px) {
     .day-name { width: 68px; font-size: 13px; }
     .btn-sm { padding: 5px 10px; font-size: 11px; }
@@ -260,6 +262,47 @@
 <div class="main" id="main"></div>
 
 <script>
+// ─── SUPABASE CONFIG ────────────────────────────────────
+const SUPABASE_URL = 'https://htpwikdxsylqkotrnnms.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh0cHdpa2R4c3lscWtvdHJubm1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxOTI2NTIsImV4cCI6MjA4OTc2ODY1Mn0.dGsk12A2mWGwaoHeZ2Y4OynFtBaA7ntT0KAm5V5wHNg';
+
+async function savePlanToSupabase(plan) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/wochenplan?id=eq.aktuell`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({ plan: plan, updated_at: new Date().toISOString() })
+    });
+    return res.ok;
+  } catch(e) {
+    console.error('Supabase save error:', e);
+    return false;
+  }
+}
+
+async function loadPlanFromSupabase() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/wochenplan?id=eq.aktuell&select=plan`, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`
+      }
+    });
+    const data = await res.json();
+    if (data?.[0]?.plan && Object.keys(data[0].plan).length > 0) {
+      return data[0].plan;
+    }
+  } catch(e) {
+    console.error('Supabase load error:', e);
+  }
+  return null;
+}
+
 // ─── DATA ───────────────────────────────────────────────
 const DAYS = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
 
@@ -318,6 +361,7 @@ function loadState() {
     selectedIngredients: {},
     showAlexaJson: false,
     alexaCopied: false,
+    alexaSyncStatus: 'idle',
   };
 }
 
@@ -531,17 +575,32 @@ function renderBring() {
       <h2>Einkaufsliste bereit!</h2>
       <p>Alle ausgewählten Zutaten direkt in Bring! übernehmen.</p>
       <a class="bring-btn" href="${S.bringLink||'#'}" id="bring-link">In Bring! öffnen →</a>
-      <button class="btn btn-outline btn-block" onclick="copyBring()" style="margin-bottom:0">🔗 Link kopieren</button>
+      <button class="btn btn-outline btn-block" onclick="copyBring()" style="margin-bottom:10px">🔗 Link kopieren</button>
+      <button class="btn btn-block" onclick="toggleAlexaList()" style="background:#1a6b3a;color:#fff;margin-bottom:0">🛒 Per Alexa hinzufügen</button>
+    </div>
+
+    <div id="alexa-list-box" style="display:none;background:#f0fff4;border:1.5px solid #43a047;border-radius:16px;padding:18px;margin-bottom:18px">
+      <div style="font-weight:700;color:#1b5e20;font-size:15px;margin-bottom:6px">🎙️ Alexa-Einkaufsliste</div>
+      <div style="font-size:12px;color:#2e7d32;margin-bottom:14px">Sag Alexa die untenstehenden Zutaten — oder lies sie einfach vor. Alexa trägt alles in Bring! ein.</div>
+      <div id="alexa-list-content"></div>
+      <button class="btn btn-block" onclick="copyAlexaList()" id="alexa-list-copy-btn" style="background:#1b5e20;color:#fff;margin-top:14px">📋 Alle als Text kopieren</button>
     </div>
 
     <div class="alexa-box">
-      <div class="alexa-box-title"><span>🔵</span> Alexa – Wochenplan senden</div>
-      <div class="alexa-box-text">JSON kopieren → Alexa Skill Code-Editor → <code style="background:#080816;padding:1px 5px;border-radius:4px;font-size:10px">WOCHENPLAN_FALLBACK</code> ersetzen → Save → Deploy.</div>
-      <button class="alexa-toggle" onclick="toggleAlexaJson()">${S.showAlexaJson?'▲ Ausblenden':'▼ Wochenplan als JSON anzeigen'}</button>
-      ${S.showAlexaJson ? `
-        <pre class="alexa-pre">${alexaJson}</pre>
-        <button class="alexa-copy ${alexaClass}" onclick="copyAlexaJson()">${alexaLabel}</button>
-      ` : ''}
+      <div class="alexa-box-title"><span>🔵</span> Alexa – Wochenplan</div>
+      ${S.alexaSyncStatus === 'syncing' ? `
+        <div style="display:flex;align-items:center;gap:10px;color:#aab;font-size:13px;font-family:sans-serif">
+          <span style="animation:spin 1s linear infinite;display:inline-block">⏳</span> Wird an Alexa gesendet…
+        </div>
+      ` : S.alexaSyncStatus === 'done' ? `
+        <div style="color:#50fa7b;font-size:14px;font-weight:700">✅ Alexa kennt den neuen Wochenplan!</div>
+        <div style="color:#8888bb;font-size:12px;margin-top:4px">Sag einfach: „Alexa, öffne Essensplaner"</div>
+      ` : S.alexaSyncStatus === 'error' ? `
+        <div style="color:#ff6b6b;font-size:13px">❌ Sync fehlgeschlagen. Bitte nochmal versuchen.</div>
+        <button class="alexa-toggle" style="margin-top:10px" onclick="retrySyncAlexa()">↺ Nochmal versuchen</button>
+      ` : `
+        <div style="color:#aab;font-size:13px;font-family:sans-serif">Plan wird beim Erstellen der Einkaufsliste automatisch gesendet.</div>
+      `}
     </div>
 
     <div class="week-summary">
@@ -566,7 +625,7 @@ function goToIngredients() {
   render();
 }
 
-function goToBring() {
+async function goToBring() {
   const groups = buildIngredientGroups();
   const items = [];
   Object.entries(groups).forEach(([day, {ingredients}]) => {
@@ -576,7 +635,19 @@ function goToBring() {
     });
   });
   S.bringLink = `https://api.getbring.com/rest/bringrecipes/deeplink?locale=de-DE&source=web&items=${encodeURIComponent(JSON.stringify(items))}`;
+  
+  // Wochenplan automatisch an Supabase (→ Alexa) senden
+  const alexaPlan = {};
+  DAYS.forEach(day => {
+    const recipe = S.weekPlan[day];
+    const isNoKook = S.noKookDays.includes(day);
+    alexaPlan[day] = { gericht: isNoKook ? 'kein Kochen' : (recipe?.name || ''), tag: recipe?.tag || '' };
+  });
+  S.alexaSyncStatus = 'syncing';
   S.step = 'bring';
+  render();
+  const ok = await savePlanToSupabase(alexaPlan);
+  S.alexaSyncStatus = ok ? 'done' : 'error';
   render();
 }
 
@@ -722,6 +793,81 @@ function resetWeek() {
 
 function attachEvents() {
   // keyboard on custom input in modal if already open
+}
+
+async function retrySyncAlexa() {
+  const alexaPlan = {};
+  DAYS.forEach(day => {
+    const recipe = S.weekPlan[day];
+    const isNoKook = S.noKookDays.includes(day);
+    alexaPlan[day] = { gericht: isNoKook ? 'kein Kochen' : (recipe?.name || ''), tag: recipe?.tag || '' };
+  });
+  S.alexaSyncStatus = 'syncing';
+  render();
+  const ok = await savePlanToSupabase(alexaPlan);
+  S.alexaSyncStatus = ok ? 'done' : 'error';
+  render();
+}
+
+function buildAlexaShoppingList() {
+  const groups = buildIngredientGroups();
+  let lines = [];
+  Object.entries(groups).forEach(([day, {recipe, ingredients}]) => {
+    const selected = ingredients.filter(ing => S.selectedIngredients[ing.id] !== false);
+    if (selected.length === 0) return;
+    lines.push(`── ${recipe.name} (${day}) ──`);
+    selected.forEach(ing => lines.push(`• ${ing.name}: ${ing.amount}`));
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
+function buildAlexaCommands() {
+  const groups = buildIngredientGroups();
+  let cmds = [];
+  Object.entries(groups).forEach(([day, {recipe, ingredients}]) => {
+    const selected = ingredients.filter(ing => S.selectedIngredients[ing.id] !== false);
+    selected.forEach(ing => cmds.push(`Alexa, füge ${ing.name} zur Einkaufsliste hinzu.`));
+  });
+  return cmds;
+}
+
+function toggleAlexaList() {
+  const box = document.getElementById('alexa-list-box');
+  if (box.style.display === 'none') {
+    box.style.display = 'block';
+    renderAlexaList();
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+function renderAlexaList() {
+  const groups = buildIngredientGroups();
+  const content = document.getElementById('alexa-list-content');
+  let html = '';
+  Object.entries(groups).forEach(([day, {recipe, ingredients}]) => {
+    const selected = ingredients.filter(ing => S.selectedIngredients[ing.id] !== false);
+    if (selected.length === 0) return;
+    const ts = TAG_STYLES[recipe.tag] || TAG_STYLES['Eigenes Gericht'];
+    html += `<div style="margin-bottom:14px">
+      <div style="font-weight:700;font-size:13px;color:${ts.text};background:${ts.bg};padding:6px 10px;border-radius:8px;margin-bottom:6px">${recipe.emoji} ${recipe.name} · ${day}</div>`;
+    selected.forEach(ing => {
+      html += `<div style="padding:6px 10px;font-size:13px;border-bottom:1px solid #e8f5e9;display:flex;justify-content:space-between">
+        <span>🎙️ <em>„Alexa, füge <strong>${ing.name}</strong> zur Einkaufsliste hinzu"</em></span>
+        <span style="color:#666;font-size:11px;margin-left:8px">${ing.amount}</span>
+      </div>`;
+    });
+    html += '</div>';
+  });
+  content.innerHTML = html || '<p style="color:#999;font-size:13px">Keine Zutaten ausgewählt.</p>';
+}
+
+function copyAlexaList() {
+  const text = buildAlexaShoppingList();
+  navigator.clipboard?.writeText(text);
+  const btn = document.getElementById('alexa-list-copy-btn');
+  if (btn) { btn.textContent = '✅ Kopiert!'; setTimeout(() => { btn.textContent = '📋 Alle als Text kopieren'; }, 2500); }
 }
 
 // ─── INIT ────────────────────────────────────────────────
