@@ -285,6 +285,69 @@ async function savePlanToSupabase(plan) {
   }
 }
 
+async function savePoolToSupabase(pool) {
+  // Delete all and re-insert (simple upsert)
+  try {
+    // First delete non-default recipes (custom/imported)
+    const toSave = pool.filter(r => !r.id.startsWith('p')); // only custom/imported
+    for (const recipe of toSave) {
+      await fetch(`${SUPABASE_URL}/rest/v1/rezeptpool`, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify({
+          id: recipe.id,
+          name: recipe.name,
+          emoji: recipe.emoji,
+          tag: recipe.tag,
+          ingredients: recipe.ingredients
+        })
+      });
+    }
+    return true;
+  } catch(e) {
+    console.error('Pool save error:', e);
+    return false;
+  }
+}
+
+async function loadPoolFromSupabase() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rezeptpool?select=*`, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`
+      }
+    });
+    const data = await res.json();
+    if (data && data.length > 0) {
+      return data.map(r => ({
+        id: r.id, name: r.name, emoji: r.emoji,
+        tag: r.tag, ingredients: r.ingredients || []
+      }));
+    }
+  } catch(e) {
+    console.error('Pool load error:', e);
+  }
+  return [];
+}
+
+async function deleteFromPool(id) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/rezeptpool?id=eq.${id}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`
+      }
+    });
+  } catch(e) { console.error('Pool delete error:', e); }
+}
+
 async function loadPlanFromSupabase() {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/wochenplan?id=eq.aktuell&select=plan`, {
@@ -718,6 +781,7 @@ function addCustomRecipe() {
   if (!name) return;
   const recipe = {id:`custom-${Date.now()}`,name,emoji:'🍽️',tag:'Eigenes Gericht',ingredients:[]};
   S.pool.push(recipe);
+  savePoolToSupabase(S.pool);
   if (currentPickerDay) {
     S.weekPlan[currentPickerDay] = recipe;
     document.getElementById('picker-overlay').style.display = 'none';
@@ -751,6 +815,7 @@ function importRecipe() {
     const recipe = {id:`import-${Date.now()}`,name:parsed.name,emoji:parsed.emoji||'🍽️',tag:parsed.tag||'Vom Rezept',ingredients:parsed.ingredients||[]};
     S.pool.push(recipe);
     saveState();
+    savePoolToSupabase(S.pool);
     okEl.textContent = `✅ „${recipe.name}" wurde hinzugefügt!`;
     okEl.style.display='block';
     document.getElementById('import-json').value='';
@@ -871,7 +936,19 @@ function copyAlexaList() {
 }
 
 // ─── INIT ────────────────────────────────────────────────
-render();
+async function init() {
+  // Load custom/imported recipes from Supabase and merge with defaults
+  const cloudPool = await loadPoolFromSupabase();
+  if (cloudPool.length > 0) {
+    // Merge: keep defaults, add cloud recipes that aren't already there
+    const existingIds = S.pool.map(r => r.id);
+    cloudPool.forEach(r => {
+      if (!existingIds.includes(r.id)) S.pool.push(r);
+    });
+  }
+  render();
+}
+init();
 </script>
 </body>
 </html>
